@@ -2,6 +2,7 @@ import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from '@med
 import { DEFAULT_CALIBRATION, FINGERS, type Calibration, type Finger, type Landmark, type NailEstimate, type NailTrack, type Point } from './tracking/types.ts';
 import { estimateNails } from './tracking/estimate.ts';
 import { NailStabilizer } from './tracking/stabilize.ts';
+import { estimatedNailPolygon, polygonArea, polygonIoU } from './tracking/geometry.ts';
 import { drawPolish, type Finish } from './tryon/polish.ts';
 import './style.css';
 
@@ -368,14 +369,15 @@ function sizeCanvas() {
 }
 function displayPoint(p: Point): Point { return { x: ($<HTMLInputElement>('#mirror').checked ? 1 - p.x : p.x) * canvas.width, y: p.y * canvas.height }; }
 function drawNail(n: NailEstimate, color: string, fill: boolean, alpha = 1, dashed = false) {
-  const p = displayPoint(n.center);
-  const dx = ($<HTMLInputElement>('#mirror').checked ? -n.direction.x : n.direction.x);
-  const dy = n.direction.y;
-  const angle = Math.atan2(dy, dx);
-  const width = n.width * canvas.height;
-  const length = n.length * canvas.height;
-  ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(angle); ctx.globalAlpha = alpha;
-  ctx.beginPath(); ctx.ellipse(0, 0, length / 2, width / 2, 0, 0, Math.PI * 2);
+  const points = estimatedNailPolygon(n, canvas.width / canvas.height);
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    const p = displayPoint(point);
+    if (index) ctx.lineTo(p.x, p.y);
+    else ctx.moveTo(p.x, p.y);
+  });
+  ctx.closePath();
   if (fill) { ctx.fillStyle = color; ctx.fill(); }
   ctx.lineWidth = Math.max(2, canvas.width / 450); ctx.strokeStyle = color; ctx.setLineDash(dashed ? [8, 6] : []); ctx.stroke(); ctx.restore();
 }
@@ -424,7 +426,6 @@ function render() {
   if (frozen) showComparison();
 }
 
-function polygonArea(points: Point[]): number { let sum = 0; for (let i=0;i<points.length;i++) { const a=points[i], b=points[(i+1)%points.length]; sum += a.x*b.y-b.x*a.y; } return Math.abs(sum)/2; }
 function polygonCenter(points: Point[]): Point {
   let crossSum = 0, xSum = 0, ySum = 0;
   for (let i=0;i<points.length;i++) {
@@ -440,8 +441,10 @@ function showComparison() {
     if (pts.length < 3 || !n) return `${LABELS[f]}：手動輪郭 ${pts.length}/3点以上<br>`;
     const centroid = polygonCenter(pts);
     const offset = Math.hypot(centroid.x-n.center.x,centroid.y-n.center.y);
-    const ratio = polygonArea(pts)/(Math.PI*n.width*n.length/(4*(frozenFrame!.width/frozenFrame!.height)));
-    return `${LABELS[f]}：中心差 ${(offset*100).toFixed(2)}（正規化座標×100）／面積比 ${ratio.toFixed(2)}<br>`;
+    const estimated = estimatedNailPolygon(n, frozenFrame!.width / frozenFrame!.height);
+    const ratio = polygonArea(pts)/polygonArea(estimated);
+    const iou = polygonIoU(pts, estimated);
+    return `${LABELS[f]}：輪郭重なり率 ${iou === null ? '不明' : `${(iou*100).toFixed(1)}%`}／中心差 ${(offset*100).toFixed(2)}（正規化座標×100）／面積比 ${ratio.toFixed(2)}<br>`;
   }).join('');
 }
 canvas.addEventListener('pointerdown', event => {

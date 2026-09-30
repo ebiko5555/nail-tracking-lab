@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { estimateNails } from '../src/tracking/estimate.ts';
 import { NailStabilizer } from '../src/tracking/stabilize.ts';
+import { estimatedNailPolygon, polygonIoU } from '../src/tracking/geometry.ts';
 import { FINGERS, DEFAULT_CALIBRATION } from '../src/tracking/types.ts';
 
 const calibration = () => Object.fromEntries(FINGERS.map(f => [f, { ...DEFAULT_CALIBRATION }]));
@@ -51,4 +52,28 @@ test('lost tracking is held briefly then disappears; recovery is bounded', () =>
   assert.equal(filter.update(missing, 1400, true).index.status, 'lost');
   assert.equal(filter.update(estimateNails(hand(.01), calibration()), 1500, true).index.status, 'tracked');
   assert.equal(filter.update(estimateNails(hand(.4), calibration()), 1550, true).index.status, 'held');
+});
+
+test('filtered direction matches the filtered angle after a finger rotates', () => {
+  const filter = new NailStabilizer();
+  const first = estimateNails(hand(), calibration());
+  filter.update(first, 1000, true);
+  const rotated = { ...first, index: { ...first.index, angle: first.index.angle + 0.4 } };
+  const track = filter.update(rotated, 1066, true).index;
+  assert.equal(track.status, 'tracked');
+  assert.ok(Math.abs(track.filtered.angle - track.raw.angle) > 0.01);
+  assert.ok(Math.abs(track.filtered.direction.x - Math.cos(track.filtered.angle)) < 1e-12);
+  assert.ok(Math.abs(track.filtered.direction.y - Math.sin(track.filtered.angle)) < 1e-12);
+});
+
+test('contour overlap distinguishes an aligned nail from a shifted one', () => {
+  const nail = estimateNails(hand(), calibration(), 16 / 9).middle;
+  const outline = estimatedNailPolygon(nail, 16 / 9);
+  assert.ok(Math.abs(polygonIoU(outline, outline) - 1) < 1e-10);
+  const shifted = outline.map(point => ({ x: point.x + 0.2, y: point.y }));
+  assert.equal(polygonIoU(outline, shifted), 0);
+  assert.equal(polygonIoU(outline.slice(0, 2), outline), null);
+  const square = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+  const halfShifted = square.map(point => ({ x: point.x + 0.5, y: point.y }));
+  assert.ok(Math.abs(polygonIoU(square, halfShifted) - 1 / 3) < 1e-12);
 });

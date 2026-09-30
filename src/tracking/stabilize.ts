@@ -53,6 +53,7 @@ export class NailStabilizer {
           width: filter.width.update(raw.width, now), length: filter.length.update(raw.length, now),
           angle: filter.angle.update(angle, now),
         };
+        smoothed.direction = { x: Math.cos(smoothed.angle), y: Math.sin(smoothed.angle) };
         const filtered = enabled ? smoothed : raw;
         filter.last = filtered; filter.lastSeen = now;
         output[finger] = { finger, status: 'tracked', raw, filtered, alpha: 1,

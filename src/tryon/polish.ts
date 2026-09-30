@@ -1,4 +1,5 @@
 import type { NailEstimate } from '../tracking/types.ts';
+import { nailShapePoints } from '../tracking/geometry.ts';
 
 export type Finish = 'cream' | 'gel' | 'sheer' | 'matte';
 
@@ -21,8 +22,7 @@ export function drawPolish(
 ): void {
   const x = (mirrored ? 1 - nail.center.x : nail.center.x) * viewWidth;
   const y = nail.center.y * viewHeight;
-  const dx = mirrored ? -nail.direction.x : nail.direction.x;
-  const angle = Math.atan2(nail.direction.y, dx);
+  const angle = Math.atan2(Math.sin(nail.angle), mirrored ? -Math.cos(nail.angle) : Math.cos(nail.angle));
   const length = nail.length * viewHeight;
   const width = nail.width * viewHeight;
   if (!Number.isFinite(x + y + angle + length + width) || length <= 0 || width <= 0) return;
@@ -32,12 +32,10 @@ export function drawPolish(
   ctx.rotate(angle);
   ctx.globalAlpha = trackingAlpha * (finish === 'sheer' ? 0.58 : 0.88);
   ctx.beginPath();
-  // The narrow rounded end represents the cuticle; the wider end represents the tip.
-  ctx.moveTo(-length * 0.48, 0);
-  ctx.bezierCurveTo(-length * 0.5, -width * 0.27, -length * 0.35, -width * 0.46, -length * 0.18, -width * 0.47);
-  ctx.bezierCurveTo(length * 0.12, -width * 0.54, length * 0.49, -width * 0.44, length * 0.5, 0);
-  ctx.bezierCurveTo(length * 0.49, width * 0.44, length * 0.12, width * 0.54, -length * 0.18, width * 0.47);
-  ctx.bezierCurveTo(-length * 0.35, width * 0.46, -length * 0.5, width * 0.27, -length * 0.48, 0);
+  nailShapePoints().forEach((point, index) => {
+    if (index) ctx.lineTo(point.x * length, point.y * width);
+    else ctx.moveTo(point.x * length, point.y * width);
+  });
   ctx.closePath();
 
   if (finish === 'matte') {
