@@ -11,31 +11,50 @@ const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmark
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header><h1>NAIL TRACKING LAB</h1><span>爪位置の実験／片手</span></header>
-  <main>
-    <section class="viewer"><canvas id="stage"></canvas><video id="camera" playsinline muted autoplay></video><div id="banner">カメラを開始してください</div></section>
+  <section id="home" class="home">
+    <h2>手を動かしても、爪の位置に重なるかを調べる</h2>
+    <p>これはネイル試着の完成品ではなく、追跡技術の実験です。背面カメラで手の甲を映すと、5本の爪の<strong>推定位置</strong>に色付きの楕円を重ねます。手や指を動かし、ずれ・揺れ・見失い方を確認します。</p>
+    <button id="enter" class="primary">カメラで実験する</button>
+    <h3>使い方</h3>
+    <ol><li>背面カメラを許可し、明るい場所で片手の甲を映す。</li><li>5色の楕円が各爪に付いて動くか見る。何も出ないときは手と指先を画面内に入れる。</li><li>位置がずれる指は「指ごとの補正」を開いて調整する。必要なら端末内に保存する。</li></ol>
+    <h3>画面下の数値は何か</h3>
+    <p>研究用の診断値です。FPSは画面の更新回数、推論msは手を見つける処理時間、描画msは線を描く時間です。各指の座標・幅・角度・変動は、ずれの原因を比較するために使います。撮影だけでネイル画像が作られたり、爪の輪郭を自動確定したりする機能はありません。</p>
+    <h3>この先</h3>
+    <p>iPhoneで静止・移動・傾き・指の重なりを測り、追跡と補正を改善します。実際の爪の輪郭を見つける専用モデルは未導入です。精度と利用条件を確認できた場合に検討し、TSUYAへの移植は検証後に判断します。</p>
+  </section>
+  <main id="lab" hidden>
+    <div class="labNav"><button id="back" type="button">← トップに戻る</button><strong>カメラ実験</strong></div>
+    <section class="viewer"><video id="camera" playsinline muted autoplay></video><canvas id="stage"></canvas><div id="banner">背面カメラを開始してください</div></section>
     <section class="controls">
       <div class="row"><button id="start">カメラ開始</button><button id="stop" disabled>停止</button><button id="freeze" disabled>1フレーム固定</button><button id="resume" disabled>再開</button></div>
-      <label>表示モード <select id="mode"><option>LANDMARK</option><option>NAIL POSITION</option><option>NAIL OVERLAY</option><option>DEBUG</option></select></label>
+      <p id="appStatus" class="hint" role="status" aria-live="polite">開始後、手の甲をカメラに向けてください。5色は5本の爪の推定位置です。</p>
+      <label>表示モード <select id="mode"><option>NAIL OVERLAY</option><option>LANDMARK</option><option>NAIL POSITION</option><option>DEBUG</option></select></label>
       <div class="row"><label><input type="checkbox" id="mirror"> 左右反転</label><label><input type="checkbox" id="filter" checked> One Euro Filter</label><label><input type="checkbox" id="compare" checked> 補正前も表示</label></div>
-      <label>調整する指 <select id="finger">${FINGERS.map(f => `<option value="${f}">${LABELS[f]}</option>`).join('')}</select></label>
-      <div id="sliders"></div>
-      <div class="row"><button id="reset">この指の補正を初期化</button><button id="save">補正値を端末に保存</button></div>
+      <details class="tools"><summary>指ごとの位置・大きさを補正</summary>
+        <label>調整する指 <select id="finger">${FINGERS.map(f => `<option value="${f}">${LABELS[f]}</option>`).join('')}</select></label>
+        <div id="sliders"></div>
+        <div class="row"><button id="reset">この指の補正を初期化</button><button id="save">補正値を端末に保存</button></div>
+      </details>
       <p class="hint">固定フレームでは、爪を選んで輪郭上を順にタップしてください。点は最大12個です。輪郭は端末内の一時メモリにのみ保持します。</p>
       <div class="row"><button id="undo" disabled>点を戻す</button><button id="clear" disabled>輪郭を消す</button><button id="export" disabled>比較結果を保存</button></div>
-      <div id="metrics" aria-live="polite"></div>
-      <div id="fingerStatus"></div>
-      <div id="comparison"></div>
+      <details class="tools"><summary>計測値を見る（研究用）</summary>
+        <p class="hint">FPS＝画面更新、推論ms＝手の認識時間、描画ms＝重ね描き時間。各指の位置・幅・角度・変動は推定値です。「認識信頼度 不明」は爪そのものを検出していないことを示します。</p>
+        <div id="metrics" aria-live="polite"></div>
+        <div id="fingerStatus"></div>
+        <div id="comparison"></div>
+      </details>
     </section>
   </main>`;
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const canvas = $<HTMLCanvasElement>('#stage');
-const ctx = canvas.getContext('2d', { alpha: false })!;
+const ctx = canvas.getContext('2d')!;
 const video = $<HTMLVideoElement>('#camera');
 const banner = $<HTMLDivElement>('#banner');
 const metrics = $<HTMLDivElement>('#metrics');
 const statusBox = $<HTMLDivElement>('#fingerStatus');
 const comparison = $<HTMLDivElement>('#comparison');
+const appStatus = $<HTMLParagraphElement>('#appStatus');
 const modeInput = $<HTMLSelectElement>('#mode');
 const fingerInput = $<HTMLSelectElement>('#finger');
 const stabilizer = new NailStabilizer();
@@ -48,7 +67,9 @@ function readCalibration(): Record<Finger, Calibration> {
 }
 const calibration = readCalibration();
 let landmarker: HandLandmarker | null = null;
+let landmarkerPromise: Promise<HandLandmarker> | null = null;
 let stream: MediaStream | null = null;
+let startToken = 0;
 let running = false;
 let frozen = false;
 let frozenFrame: HTMLCanvasElement | null = null;
@@ -57,7 +78,6 @@ let currentTracks: Record<Finger, NailTrack> | null = null;
 let currentLandmarks: Landmark[] = [];
 const emptyManual = () => Object.fromEntries(FINGERS.map(f => [f, [] as Point[]])) as Record<Finger, Point[]>;
 let manual = emptyManual();
-let lastVideoTime = -1;
 let lastInferenceAt = 0;
 let inferenceMs = 0;
 let drawMs = 0;
@@ -67,6 +87,9 @@ let fps = 0;
 let rafId = 0;
 let lastDrawAt = 0;
 let lastUiAt = 0;
+let lastHandAt = 0;
+const inferenceCanvas = document.createElement('canvas');
+const inferenceContext = inferenceCanvas.getContext('2d', { willReadFrequently: true })!;
 
 const sliderDefs = [
   ['along', '指方向の位置', -0.5, 0.5, 0.01],
@@ -86,7 +109,10 @@ function showSliders() {
   }));
 }
 fingerInput.addEventListener('change', showSliders);
-for (const id of ['mode', 'mirror', 'compare']) $<HTMLElement>(`#${id}`).addEventListener('change', () => { if (frozen) render(); });
+for (const id of ['mode', 'mirror', 'compare']) $<HTMLElement>(`#${id}`).addEventListener('change', () => {
+  if (id === 'mirror') video.style.transform = $<HTMLInputElement>('#mirror').checked ? 'scaleX(-1)' : '';
+  render();
+});
 showSliders();
 $('#reset').addEventListener('click', () => { calibration[fingerInput.value as Finger] = { ...DEFAULT_CALIBRATION }; showSliders(); if (frozen) recomputeFrozen(); });
 $('#save').addEventListener('click', () => { localStorage.setItem('nail-tracking-lab-calibration-v1', JSON.stringify(calibration)); banner.textContent = '補正値をこの端末に保存しました'; });
@@ -94,46 +120,93 @@ $('#save').addEventListener('click', () => { localStorage.setItem('nail-tracking
 async function initLandmarker() {
   if (landmarker) return;
   banner.textContent = '手の認識モデルを読み込み中…';
-  const fileset = await FilesetResolver.forVisionTasks(`${import.meta.env.BASE_URL}wasm`);
-  landmarker = await HandLandmarker.createFromOptions(fileset, {
-    baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
-    runningMode: 'VIDEO', numHands: 1,
-    minHandDetectionConfidence: 0.6, minHandPresenceConfidence: 0.6, minTrackingConfidence: 0.6,
-  });
+  if (!landmarkerPromise) landmarkerPromise = (async () => {
+    const fileset = await FilesetResolver.forVisionTasks(`${import.meta.env.BASE_URL}wasm`);
+    return HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
+      runningMode: 'VIDEO', numHands: 1,
+      minHandDetectionConfidence: 0.6, minHandPresenceConfidence: 0.6, minTrackingConfidence: 0.6,
+    });
+  })().catch(error => { landmarkerPromise = null; throw error; });
+  landmarker = await landmarkerPromise;
 }
 
 async function start() {
+  if (stream || running) return;
+  const token = ++startToken;
+  const startButton = $<HTMLButtonElement>('#start');
+  startButton.disabled = true;
+  $<HTMLButtonElement>('#stop').disabled = false;
+  appStatus.textContent = 'カメラに接続中…';
   try {
     if (!window.isSecureContext) throw new Error('カメラには HTTPS または localhost が必要です。');
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } } });
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('このブラウザではカメラを利用できません。');
+    const acquired = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } } });
+    if (token !== startToken) { acquired.getTracks().forEach(t => t.stop()); return; }
+    stream = acquired;
+    const track = stream.getVideoTracks()[0];
+    track.addEventListener('ended', () => { if (token === startToken) { stop(); banner.textContent = 'カメラが切断されました。再度「カメラ開始」を押してください。'; } });
     video.srcObject = stream;
     await video.play();
+    if (token !== startToken) return;
+    if (video.videoWidth && video.videoHeight) video.style.aspectRatio = `${video.videoWidth}/${video.videoHeight}`;
+    banner.textContent = '手の認識モデルを読み込み中…映像は先に確認できます';
+    appStatus.textContent = 'モデルを準備中。長く止まる場合は「停止」からやり直せます。';
     await initLandmarker();
-    running = true; frozen = false; lastVideoTime = -1; stabilizer.reset();
-    $<HTMLButtonElement>('#start').disabled = true;
-    $<HTMLButtonElement>('#stop').disabled = false;
+    if (token !== startToken) return;
+    running = true; frozen = false; lastInferenceAt = 0; lastHandAt = performance.now();
+    inferenceMs = 0; drawMs = 0; frameCount = 0; fps = 0; fpsAt = performance.now(); stabilizer.reset();
     $<HTMLButtonElement>('#freeze').disabled = false;
     banner.textContent = '';
+    appStatus.textContent = '手の甲を背面カメラに向けてください。爪位置が5色で重なります。';
     rafId = requestAnimationFrame(loop);
   } catch (error) {
+    if (token !== startToken) return;
     stream?.getTracks().forEach(t => t.stop()); stream = null;
+    video.srcObject = null; video.style.aspectRatio = '';
+    startButton.disabled = false;
+    $<HTMLButtonElement>('#stop').disabled = true;
+    appStatus.textContent = '開始に失敗しました。表示された原因を確認して、もう一度試してください。';
     banner.textContent = error instanceof DOMException && error.name === 'OverconstrainedError'
       ? '背面カメラを利用できません。この端末とブラウザのカメラ設定を確認してください。'
       : `開始できません: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 function stop() {
+  startToken++;
   running = false; frozen = false; cancelAnimationFrame(rafId);
-  stream?.getTracks().forEach(t => t.stop()); stream = null; video.srcObject = null;
+  stream?.getTracks().forEach(t => t.stop()); stream = null; video.srcObject = null; video.style.aspectRatio = '';
+  $<HTMLElement>('.viewer').classList.remove('frozen');
   frozenFrame = null; frozenTracks = null; currentTracks = null; currentLandmarks = []; manual = emptyManual();
-  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   stabilizer.reset();
   $<HTMLButtonElement>('#start').disabled = false;
   for (const id of ['stop', 'freeze', 'resume', 'undo', 'clear', 'export']) $<HTMLButtonElement>(`#${id}`).disabled = true;
   banner.textContent = 'カメラを停止しました'; comparison.textContent = '';
+  appStatus.textContent = '「カメラ開始」で再開できます。';
 }
 $('#start').addEventListener('click', start);
 $('#stop').addEventListener('click', stop);
+function showView() {
+  const labOpen = location.hash === '#experiment';
+  $<HTMLElement>('#home').hidden = labOpen;
+  $<HTMLElement>('#lab').hidden = !labOpen;
+  if (!labOpen) {
+    if (stream || running || $<HTMLButtonElement>('#start').disabled) stop();
+    window.scrollTo(0, 0);
+  }
+}
+$('#enter').addEventListener('click', () => {
+  location.hash = 'experiment';
+  showView();
+  void start();
+});
+$('#back').addEventListener('click', () => {
+  history.replaceState(null, '', location.pathname + location.search);
+  showView();
+});
+window.addEventListener('hashchange', showView);
+showView();
 $('#freeze').addEventListener('click', () => {
   if (!running || !video.videoWidth) return;
   const frame = document.createElement('canvas'); frame.width = video.videoWidth; frame.height = video.videoHeight;
@@ -144,15 +217,17 @@ $('#freeze').addEventListener('click', () => {
     currentLandmarks = (result.landmarks[0] ?? []) as Landmark[];
     const estimates = estimateNails(currentLandmarks, calibration, frame.width / frame.height);
     frozenTracks = Object.fromEntries(FINGERS.map(f => [f, { finger: f, status: estimates[f]?.quality !== null && estimates[f] ? 'tracked' : 'unknown', raw: estimates[f], filtered: estimates[f], alpha: 1, displacement: 0, motion: null }])) as Record<Finger, NailTrack>;
-  } catch { frozenTracks = null; currentLandmarks = []; banner.textContent = '固定フレームの認識に失敗しました'; }
+  } catch (error) { frozenTracks = null; currentLandmarks = []; appStatus.textContent = `固定フレームの認識に失敗しました: ${String(error)}`; }
   frozenFrame = frame; frozen = true;
   $<HTMLButtonElement>('#resume').disabled = false; $<HTMLButtonElement>('#freeze').disabled = true;
   $<HTMLButtonElement>('#undo').disabled = false; $<HTMLButtonElement>('#clear').disabled = false;
   $<HTMLButtonElement>('#export').disabled = false;
-  banner.textContent = '固定中：輪郭をタップして指定';
+  banner.textContent = '固定中：輪郭をタップして指定。「再開」でライブに戻ります';
+  appStatus.textContent = '1フレーム固定中です。「再開」でカメラ映像に戻ります。';
+  $<HTMLElement>('.viewer').classList.add('frozen');
   render();
 });
-$('#resume').addEventListener('click', () => { frozen = false; frozenFrame = null; frozenTracks = null; manual = emptyManual(); stabilizer.reset(); $<HTMLButtonElement>('#resume').disabled = true; $<HTMLButtonElement>('#freeze').disabled = false; $<HTMLButtonElement>('#export').disabled = true; comparison.textContent = ''; banner.textContent = ''; });
+$('#resume').addEventListener('click', () => { frozen = false; frozenFrame = null; frozenTracks = null; manual = emptyManual(); stabilizer.reset(); lastInferenceAt = 0; $<HTMLElement>('.viewer').classList.remove('frozen'); $<HTMLButtonElement>('#resume').disabled = true; $<HTMLButtonElement>('#freeze').disabled = false; $<HTMLButtonElement>('#export').disabled = true; comparison.textContent = ''; banner.textContent = ''; appStatus.textContent = 'ライブ映像に戻りました。'; });
 $('#undo').addEventListener('click', () => { manual[fingerInput.value as Finger].pop(); render(); });
 $('#clear').addEventListener('click', () => { manual[fingerInput.value as Finger] = []; render(); });
 
@@ -165,26 +240,41 @@ function recomputeFrozen() {
 
 function loop(now: number) {
   if (!running) return;
-  if (frozen) { rafId = requestAnimationFrame(loop); return; }
-  if (!frozen && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    // Inference is throttled independently of display frames; duplicate camera frames are skipped.
-    if (video.currentTime !== lastVideoTime && now - lastInferenceAt >= 50) {
-      const began = performance.now();
-      let result: HandLandmarkerResult;
-      try { result = landmarker!.detectForVideo(video, now); }
-      catch (error) { stop(); banner.textContent = `認識エラー: ${String(error)}`; return; }
-      inferenceMs = performance.now() - began;
-      lastInferenceAt = now; lastVideoTime = video.currentTime;
-      currentLandmarks = (result.landmarks[0] ?? []) as Landmark[];
-      currentTracks = stabilizer.update(estimateNails(currentLandmarks, calibration, video.videoWidth / video.videoHeight), now, $<HTMLInputElement>('#filter').checked);
-    } else if (currentTracks && now - lastInferenceAt > 150) {
-      currentTracks = stabilizer.update(Object.fromEntries(FINGERS.map(f => [f, null])) as Record<Finger, null>, now, $<HTMLInputElement>('#filter').checked);
+  try {
+    if (!frozen && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth && video.videoHeight) {
+      // The video stays visible while inference runs on a smaller copy of the frame.
+      // Do not gate inference on currentTime: camera streams may report it unreliably.
+      if (now - lastInferenceAt >= Math.max(65, Math.min(180, inferenceMs * 1.25))) {
+        const scale = Math.min(1, 640 / video.videoWidth);
+        const width = Math.max(1, Math.round(video.videoWidth * scale));
+        const height = Math.max(1, Math.round(video.videoHeight * scale));
+        if (inferenceCanvas.width !== width || inferenceCanvas.height !== height) { inferenceCanvas.width = width; inferenceCanvas.height = height; }
+        inferenceContext.drawImage(video, 0, 0, width, height);
+        const began = performance.now();
+        const result: HandLandmarkerResult = landmarker!.detectForVideo(inferenceCanvas, now);
+        inferenceMs = performance.now() - began;
+        lastInferenceAt = now;
+        currentLandmarks = result.landmarks[0]?.length === 21 ? result.landmarks[0] as Landmark[] : [];
+        if (currentLandmarks.length) lastHandAt = now;
+        currentTracks = stabilizer.update(estimateNails(currentLandmarks, calibration, video.videoWidth / video.videoHeight), now, $<HTMLInputElement>('#filter').checked);
+      }
     }
-  }
-  if (now - lastDrawAt >= 32) {
-    const beganDraw = performance.now(); render(); drawMs = performance.now() - beganDraw;
-    lastDrawAt = now; frameCount++;
-    if (now - fpsAt >= 1000) { fps = frameCount * 1000 / (now - fpsAt); frameCount = 0; fpsAt = now; }
+    if (now - lastDrawAt >= 32) {
+      const beganDraw = performance.now(); render(); drawMs = performance.now() - beganDraw;
+      lastDrawAt = now; frameCount++;
+      if (now - fpsAt >= 1000) { fps = frameCount * 1000 / (now - fpsAt); frameCount = 0; fpsAt = now; }
+      if (!frozen && now - lastUiAt < 40) appStatus.textContent = video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+        ? 'カメラ映像を待っています。「停止」からやり直せます。'
+        : now - lastHandAt > 1000 ? '手を見つけられません。明るい場所で手の甲と指先を画面内に入れてください。'
+          : !currentTracks || !FINGERS.some(f => currentTracks![f].status === 'tracked')
+            ? '手は見つかりましたが、爪位置は不明です。指先を離し、手の甲をカメラへ向けてください。'
+            : '5色の楕円は爪の推定位置です。ずれた指は下のスライダーで補正できます。';
+    }
+  } catch (error) {
+    stop();
+    banner.textContent = `認識・描画エラー: ${error instanceof Error ? error.message : String(error)}。再度「カメラ開始」を押してください。`;
+    appStatus.textContent = '処理を停止しました。エラーを確認して再開できます。';
+    return;
   }
   rafId = requestAnimationFrame(loop);
 }
@@ -217,8 +307,8 @@ function drawLandmarks() {
 function render() {
   sizeCanvas();
   const source = frozenFrame ?? video;
-  ctx.fillStyle = '#111'; ctx.fillRect(0,0,canvas.width,canvas.height);
-  if (frozenFrame || video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (frozenFrame) {
     ctx.save();
     if ($<HTMLInputElement>('#mirror').checked) { ctx.translate(canvas.width,0); ctx.scale(-1,1); }
     ctx.drawImage(source,0,0,canvas.width,canvas.height); ctx.restore();
