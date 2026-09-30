@@ -20,10 +20,10 @@ app.innerHTML = `
   <header><h1>NAIL TRACKING LAB</h1><span>爪位置の実験／片手</span></header>
   <section id="home" class="home">
     <h2>自分の手で、ネイルカラーを試す</h2>
-    <p>背面カメラで手の甲を映し、爪に色を重ねて見比べます。好きな色と仕上がりを選び、手を動かして追従を確かめられます。</p>
+    <p>背面カメラで手の甲を映し、爪に色を重ねて見比べます。好きな色と仕上がりを選び、気に入った状態を写真に保存できます。</p>
     <button id="enter" class="primary">ネイルカラーを試す</button>
     <h3>使い方</h3>
-    <ol><li>背面カメラを許可し、明るい場所で片手の甲を映す。</li><li>色と仕上がりを選ぶ。単色でも、5本別々の色でも試せる。</li><li>手を動かして色の追従を見る。位置がずれる指は「指ごとの補正」で調整する。</li></ol>
+    <ol><li>背面カメラを許可し、明るい場所で片手の甲を映す。</li><li>色と仕上がりを選び、自分の爪で見比べる。</li><li>気に入った状態を写真に保存する。追従を詳しく調べたい場合だけ研究用の表示を開く。</li></ol>
     <h3>試せることと精度</h3>
     <p>現在は関節点から爪の位置と形を推定して塗ります。爪の輪郭そのものをAIで検出する機能はまだないため、色がはみ出す場合があります。補正値は端末内に保存できます。追跡精度を調べる数値は撮影画面の「計測値を見る」にあります。</p>
     <h3>この先</h3>
@@ -41,6 +41,8 @@ app.innerHTML = `
         <div class="row"><label>好きな色 <input id="customColor" type="color" value="#bd586c"></label><label><input id="multiColor" type="checkbox"> 5本別々の色</label></div>
         <div id="fingerColors" class="fingerColors" hidden>${FINGERS.map(f => `<label>${LABELS[f]} <input type="color" data-finger="${f}" value="${INITIAL_FINGER_COLORS[f]}"></label>`).join('')}</div>
         <div class="row"><label>仕上がり <select id="finish"><option value="cream">クリーム</option><option value="gel">ジェル風</option><option value="sheer">シアー</option><option value="matte">マット</option></select></label><label><input id="bare" type="checkbox"> 色を外して比較</label></div>
+        <button id="capture" type="button" disabled>この試着を写真に保存</button>
+        <p class="hint">保存を押したときだけ、この端末に写真を作ります。撮影画像はサーバーに送りません。</p>
         <p class="hint">色は爪の推定位置に重ねます。輪郭がずれたら下の補正で調整してください。</p>
       </section>
       <details class="tools"><summary>追跡の表示・設定（研究用）</summary>
@@ -204,6 +206,7 @@ async function start() {
     running = true; frozen = false; lastInferenceAt = 0; lastHandAt = performance.now();
     inferenceMs = 0; drawMs = 0; frameCount = 0; fps = 0; fpsAt = performance.now(); stabilizer.reset();
     $<HTMLButtonElement>('#freeze').disabled = false;
+    $<HTMLButtonElement>('#capture').disabled = false;
     banner.textContent = '';
     appStatus.textContent = '手の甲を背面カメラに向けてください。選んだ色を爪の推定位置に重ねます。';
     rafId = requestAnimationFrame(loop);
@@ -229,11 +232,41 @@ function stop() {
   stabilizer.reset();
   $<HTMLButtonElement>('#start').disabled = false;
   for (const id of ['stop', 'freeze', 'resume', 'undo', 'clear', 'export']) $<HTMLButtonElement>(`#${id}`).disabled = true;
+  $<HTMLButtonElement>('#capture').disabled = true;
   banner.textContent = 'カメラを停止しました'; comparison.textContent = '';
   appStatus.textContent = '「カメラ開始」で再開できます。';
 }
 $('#start').addEventListener('click', start);
 $('#stop').addEventListener('click', stop);
+$('#capture').addEventListener('click', () => {
+  if (!running || !video.videoWidth || !video.videoHeight) return;
+  const photo = document.createElement('canvas');
+  photo.width = frozenFrame?.width ?? video.videoWidth;
+  photo.height = frozenFrame?.height ?? video.videoHeight;
+  const photoContext = photo.getContext('2d');
+  if (!photoContext) { appStatus.textContent = '写真を作成できませんでした。'; return; }
+  render();
+  if (frozenFrame) photoContext.drawImage(canvas, 0, 0, photo.width, photo.height);
+  else {
+    if ($<HTMLInputElement>('#mirror').checked) {
+      photoContext.translate(photo.width, 0);
+      photoContext.scale(-1, 1);
+    }
+    photoContext.drawImage(video, 0, 0, photo.width, photo.height);
+    photoContext.setTransform(1, 0, 0, 1, 0, 0);
+    photoContext.drawImage(canvas, 0, 0, photo.width, photo.height);
+  }
+  photo.toBlob(blob => {
+    if (!blob) { appStatus.textContent = '写真を作成できませんでした。'; return; }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `nail-tryon-${new Date().toISOString().slice(0, 10)}.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    appStatus.textContent = '試着写真のダウンロードを開始しました。ブラウザの保存先を確認してください。';
+  }, 'image/png');
+});
 function showView() {
   const labOpen = location.hash === '#experiment';
   $<HTMLElement>('#home').hidden = labOpen;
