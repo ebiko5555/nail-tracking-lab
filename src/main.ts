@@ -16,7 +16,7 @@ app.innerHTML = `
     <section class="controls">
       <div class="row"><button id="start">カメラ開始</button><button id="stop" disabled>停止</button><button id="freeze" disabled>1フレーム固定</button><button id="resume" disabled>再開</button></div>
       <label>表示モード <select id="mode"><option>LANDMARK</option><option>NAIL POSITION</option><option>NAIL OVERLAY</option><option>DEBUG</option></select></label>
-      <div class="row"><label><input type="checkbox" id="mirror" checked> 左右反転</label><label><input type="checkbox" id="filter" checked> One Euro Filter</label><label><input type="checkbox" id="compare" checked> 補正前も表示</label></div>
+      <div class="row"><label><input type="checkbox" id="mirror"> 左右反転</label><label><input type="checkbox" id="filter" checked> One Euro Filter</label><label><input type="checkbox" id="compare" checked> 補正前も表示</label></div>
       <label>調整する指 <select id="finger">${FINGERS.map(f => `<option value="${f}">${LABELS[f]}</option>`).join('')}</select></label>
       <div id="sliders"></div>
       <div class="row"><button id="reset">この指の補正を初期化</button><button id="save">補正値を端末に保存</button></div>
@@ -105,7 +105,7 @@ async function initLandmarker() {
 async function start() {
   try {
     if (!window.isSecureContext) throw new Error('カメラには HTTPS または localhost が必要です。');
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } } });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } } });
     video.srcObject = stream;
     await video.play();
     await initLandmarker();
@@ -117,7 +117,9 @@ async function start() {
     rafId = requestAnimationFrame(loop);
   } catch (error) {
     stream?.getTracks().forEach(t => t.stop()); stream = null;
-    banner.textContent = `開始できません: ${error instanceof Error ? error.message : String(error)}`;
+    banner.textContent = error instanceof DOMException && error.name === 'OverconstrainedError'
+      ? '背面カメラを利用できません。この端末とブラウザのカメラ設定を確認してください。'
+      : `開始できません: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 function stop() {
