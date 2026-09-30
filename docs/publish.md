@@ -1,5 +1,7 @@
 # GitHub Pages手動公開
 
+公開URL: https://ebiko5555.github.io/nail-tracking-lab/
+
 1. `main` にソースをプッシュする。
 2. GitHubのリポジトリで **Settings → Pages → Build and deployment → Source** を **GitHub Actions** にする。
 3. **Actions → Publish NAIL TRACKING LAB → Run workflow** を手動実行する。

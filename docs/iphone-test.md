@@ -1,9 +1,9 @@
-# iPhone Safari確認手順
+# iPhone Chrome／Safari確認手順
 
 ## 準備
 
-1. `npm run build` の結果 `deliverables/web/` をHTTPSで配信する。GitHub Pagesなら、このフォルダの内容を公開用リポジトリへ配置し、Pages設定を手動で有効化する。本依頼では公開操作を行っていない。
-2. iPhoneのSafariでHTTPSのURLを開き、カメラを許可する。モデル取得にネット接続が必要。画像はアプリから外部へ送らない。
+1. iPhoneのChromeで https://ebiko5555.github.io/nail-tracking-lab/ を開く。Safariでも同じURLを使える。
+2. 「カメラ開始」を押してカメラを許可する。モデル取得にネット接続が必要。画像はアプリから外部へ送らない。
 3. 明るい場所で手の甲側をカメラに向け、指先まで画面に入れる。片手のみを対象にする。
 
 ## 8条件
