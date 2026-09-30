@@ -1,0 +1,20 @@
+NAIL TRACKING LAB — third-party notices
+
+MediaPipe Tasks Vision 0.10.35
+Copyright The MediaPipe Authors.
+Apache License 2.0; see APACHE-2.0.txt.
+https://github.com/google-ai-edge/mediapipe
+
+TypeScript 5.9.3 is used only at build time.
+Copyright Microsoft Corporation.
+Apache License 2.0; see APACHE-2.0.txt.
+https://github.com/microsoft/TypeScript
+
+Vite 7.1.12 is used only at build time.
+Copyright VoidZero Inc. and Vite contributors.
+MIT License.
+https://github.com/vitejs/vite/blob/main/packages/vite/LICENSE.md
+
+The hand_landmarker.task model is fetched at runtime from Google's official URL.
+It is not redistributed in this project. Model-specific commercial terms have
+not been verified; see docs/licenses-and-models.md in the source project.
