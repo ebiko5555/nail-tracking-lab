@@ -2,34 +2,51 @@ import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from '@med
 import { DEFAULT_CALIBRATION, FINGERS, type Calibration, type Finger, type Landmark, type NailEstimate, type NailTrack, type Point } from './tracking/types.ts';
 import { estimateNails } from './tracking/estimate.ts';
 import { NailStabilizer } from './tracking/stabilize.ts';
+import { drawPolish, type Finish } from './tryon/polish.ts';
 import './style.css';
 
 type Mode = 'LANDMARK' | 'NAIL POSITION' | 'NAIL OVERLAY' | 'DEBUG';
 const LABELS: Record<Finger, string> = { thumb: '親指', index: '人差し指', middle: '中指', ring: '薬指', pinky: '小指' };
 const COLORS: Record<Finger, string> = { thumb: '#f45161', index: '#ffa33a', middle: '#e5da45', ring: '#4ddbb6', pinky: '#8c91ff' };
+const SHADES = [
+  { name: 'ローズ', color: '#bd586c' }, { name: 'コーラル', color: '#ef8479' },
+  { name: 'ベージュ', color: '#b98572' }, { name: 'チェリー', color: '#a82443' },
+  { name: 'プラム', color: '#753c64' }, { name: 'ブルー', color: '#637ead' },
+];
+const INITIAL_FINGER_COLORS: Record<Finger, string> = { thumb: '#bd586c', index: '#ef8479', middle: '#b98572', ring: '#753c64', pinky: '#637ead' };
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header><h1>NAIL TRACKING LAB</h1><span>爪位置の実験／片手</span></header>
   <section id="home" class="home">
-    <h2>手を動かしても、爪の位置に重なるかを調べる</h2>
-    <p>これはネイル試着の完成品ではなく、追跡技術の実験です。背面カメラで手の甲を映すと、5本の爪の<strong>推定位置</strong>に色付きの楕円を重ねます。手や指を動かし、ずれ・揺れ・見失い方を確認します。</p>
-    <button id="enter" class="primary">カメラで実験する</button>
+    <h2>自分の手で、ネイルカラーを試す</h2>
+    <p>背面カメラで手の甲を映し、爪に色を重ねて見比べます。好きな色と仕上がりを選び、手を動かして追従を確かめられます。</p>
+    <button id="enter" class="primary">ネイルカラーを試す</button>
     <h3>使い方</h3>
-    <ol><li>背面カメラを許可し、明るい場所で片手の甲を映す。</li><li>5色の楕円が各爪に付いて動くか見る。何も出ないときは手と指先を画面内に入れる。</li><li>位置がずれる指は「指ごとの補正」を開いて調整する。必要なら端末内に保存する。</li></ol>
-    <h3>画面下の数値は何か</h3>
-    <p>研究用の診断値です。FPSは画面の更新回数、推論msは手を見つける処理時間、描画msは線を描く時間です。各指の座標・幅・角度・変動は、ずれの原因を比較するために使います。撮影だけでネイル画像が作られたり、爪の輪郭を自動確定したりする機能はありません。</p>
+    <ol><li>背面カメラを許可し、明るい場所で片手の甲を映す。</li><li>色と仕上がりを選ぶ。単色でも、5本別々の色でも試せる。</li><li>手を動かして色の追従を見る。位置がずれる指は「指ごとの補正」で調整する。</li></ol>
+    <h3>試せることと精度</h3>
+    <p>現在は関節点から爪の位置と形を推定して塗ります。爪の輪郭そのものをAIで検出する機能はまだないため、色がはみ出す場合があります。補正値は端末内に保存できます。追跡精度を調べる数値は撮影画面の「計測値を見る」にあります。</p>
     <h3>この先</h3>
     <p>iPhoneで静止・移動・傾き・指の重なりを測り、追跡と補正を改善します。実際の爪の輪郭を見つける専用モデルは未導入です。精度と利用条件を確認できた場合に検討し、TSUYAへの移植は検証後に判断します。</p>
   </section>
   <main id="lab" hidden>
-    <div class="labNav"><button id="back" type="button">← トップに戻る</button><strong>カメラ実験</strong></div>
+    <div class="labNav"><button id="back" type="button">← トップに戻る</button><strong>ネイルカラー試着</strong></div>
     <section class="viewer"><video id="camera" playsinline muted autoplay></video><canvas id="stage"></canvas><div id="banner">背面カメラを開始してください</div></section>
     <section class="controls">
       <div class="row"><button id="start">カメラ開始</button><button id="stop" disabled>停止</button><button id="freeze" disabled>1フレーム固定</button><button id="resume" disabled>再開</button></div>
-      <p id="appStatus" class="hint" role="status" aria-live="polite">開始後、手の甲をカメラに向けてください。5色は5本の爪の推定位置です。</p>
+      <p id="appStatus" class="hint" role="status" aria-live="polite">開始後、手の甲をカメラに向けてください。</p>
+      <section class="tryOn" aria-label="ネイルカラーを選ぶ">
+        <strong>ネイルカラー</strong>
+        <div class="swatches">${SHADES.map(({ name, color }) => `<button class="swatch" type="button" data-color="${color}" style="background:${color}" aria-label="${name}" title="${name}"></button>`).join('')}</div>
+        <div class="row"><label>好きな色 <input id="customColor" type="color" value="#bd586c"></label><label><input id="multiColor" type="checkbox"> 5本別々の色</label></div>
+        <div id="fingerColors" class="fingerColors" hidden>${FINGERS.map(f => `<label>${LABELS[f]} <input type="color" data-finger="${f}" value="${INITIAL_FINGER_COLORS[f]}"></label>`).join('')}</div>
+        <div class="row"><label>仕上がり <select id="finish"><option value="cream">クリーム</option><option value="gel">ジェル風</option><option value="sheer">シアー</option><option value="matte">マット</option></select></label><label><input id="bare" type="checkbox"> 色を外して比較</label></div>
+        <p class="hint">色は爪の推定位置に重ねます。輪郭がずれたら下の補正で調整してください。</p>
+      </section>
+      <details class="tools"><summary>追跡の表示・設定（研究用）</summary>
       <label>表示モード <select id="mode"><option>NAIL OVERLAY</option><option>LANDMARK</option><option>NAIL POSITION</option><option>DEBUG</option></select></label>
       <div class="row"><label><input type="checkbox" id="mirror"> 左右反転</label><label><input type="checkbox" id="filter" checked> One Euro Filter</label><label><input type="checkbox" id="compare" checked> 補正前も表示</label></div>
+      </details>
       <details class="tools"><summary>指ごとの位置・大きさを補正</summary>
         <label>調整する指 <select id="finger">${FINGERS.map(f => `<option value="${f}">${LABELS[f]}</option>`).join('')}</select></label>
         <div id="sliders"></div>
@@ -58,6 +75,36 @@ const appStatus = $<HTMLParagraphElement>('#appStatus');
 const modeInput = $<HTMLSelectElement>('#mode');
 const fingerInput = $<HTMLSelectElement>('#finger');
 const stabilizer = new NailStabilizer();
+const fingerColors = { ...INITIAL_FINGER_COLORS };
+let selectedColor = SHADES[0].color;
+let finish: Finish = 'cream';
+
+function updateSwatches() {
+  document.querySelectorAll<HTMLButtonElement>('.swatch').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.color === selectedColor && !$<HTMLInputElement>('#multiColor').checked));
+  });
+}
+function useSingleColor(color: string) {
+  selectedColor = color;
+  $<HTMLInputElement>('#customColor').value = color;
+  $<HTMLInputElement>('#multiColor').checked = false;
+  $<HTMLElement>('#fingerColors').hidden = true;
+  updateSwatches();
+  render();
+}
+document.querySelectorAll<HTMLButtonElement>('.swatch').forEach(button => button.addEventListener('click', () => useSingleColor(button.dataset.color!)));
+$<HTMLInputElement>('#customColor').addEventListener('input', event => useSingleColor((event.target as HTMLInputElement).value));
+$<HTMLInputElement>('#multiColor').addEventListener('change', event => {
+  $<HTMLElement>('#fingerColors').hidden = !(event.target as HTMLInputElement).checked;
+  updateSwatches(); render();
+});
+document.querySelectorAll<HTMLInputElement>('#fingerColors input').forEach(input => input.addEventListener('input', () => {
+  fingerColors[input.dataset.finger as Finger] = input.value;
+  render();
+}));
+$<HTMLSelectElement>('#finish').addEventListener('change', event => { finish = (event.target as HTMLSelectElement).value as Finish; render(); });
+$<HTMLInputElement>('#bare').addEventListener('change', render);
+updateSwatches();
 
 function readCalibration(): Record<Finger, Calibration> {
   try {
@@ -158,7 +205,7 @@ async function start() {
     inferenceMs = 0; drawMs = 0; frameCount = 0; fps = 0; fpsAt = performance.now(); stabilizer.reset();
     $<HTMLButtonElement>('#freeze').disabled = false;
     banner.textContent = '';
-    appStatus.textContent = '手の甲を背面カメラに向けてください。爪位置が5色で重なります。';
+    appStatus.textContent = '手の甲を背面カメラに向けてください。選んだ色を爪の推定位置に重ねます。';
     rafId = requestAnimationFrame(loop);
   } catch (error) {
     if (token !== startToken) return;
@@ -268,7 +315,8 @@ function loop(now: number) {
         : now - lastHandAt > 1000 ? '手を見つけられません。明るい場所で手の甲と指先を画面内に入れてください。'
           : !currentTracks || !FINGERS.some(f => currentTracks![f].status === 'tracked')
             ? '手は見つかりましたが、爪位置は不明です。指先を離し、手の甲をカメラへ向けてください。'
-            : '5色の楕円は爪の推定位置です。ずれた指は下のスライダーで補正できます。';
+            : $<HTMLInputElement>('#bare').checked ? '色を外して比較中です。チェックを外すと再び色が重なります。'
+              : '選んだ色を爪の推定位置に重ねています。ずれた指は補正できます。';
     }
   } catch (error) {
     stop();
@@ -318,7 +366,12 @@ function render() {
   if (mode === 'LANDMARK' || mode === 'DEBUG') drawLandmarks();
   if (mode !== 'LANDMARK' && tracks) for (const f of FINGERS) {
     const t = tracks[f];
-    if (t.filtered && t.status !== 'unknown' && t.status !== 'lost') drawNail(t.filtered,COLORS[f],mode === 'NAIL OVERLAY',t.alpha,t.status === 'held');
+    if (t.filtered && t.status !== 'unknown' && t.status !== 'lost') {
+      if (mode === 'NAIL OVERLAY') {
+        if (!$<HTMLInputElement>('#bare').checked) drawPolish(ctx, t.filtered, canvas.width, canvas.height, $<HTMLInputElement>('#mirror').checked,
+          $<HTMLInputElement>('#multiColor').checked ? fingerColors[f] : selectedColor, finish, t.alpha);
+      } else drawNail(t.filtered,COLORS[f],false,t.alpha,t.status === 'held');
+    }
     if (mode === 'DEBUG' && $<HTMLInputElement>('#compare').checked && t.raw && t.status === 'tracked') drawNail(t.raw,'#ffffff',false,0.8,true);
   }
   if (frozen) for (const f of FINGERS) {

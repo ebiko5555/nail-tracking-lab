@@ -29,6 +29,14 @@ input[type=range] { width: 100%; accent-color: #5de3ce; }
 #sliders label { display: grid; grid-template-columns: 1fr auto; gap: 4px; margin: 8px 0; }
 #sliders input { grid-column: 1 / 3; }
 .hint { font-size: .82rem; color: #b9c4d2; line-height: 1.5; margin: 0; }
+.tryOn { display: flex; flex-direction: column; gap: 12px; padding: 14px; background: #252c36; border: 1px solid #607082; border-radius: 8px; }
+.tryOn > strong { font-size: 1rem; }
+.swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+.swatch { width: 42px; height: 42px; border-radius: 50%; border: 2px solid #edf1f5; padding: 0; }
+.swatch[aria-pressed="true"] { outline: 3px solid #5de3ce; outline-offset: 3px; }
+input[type=color] { width: 42px; height: 36px; padding: 1px; background: transparent; border: 1px solid #627086; border-radius: 5px; }
+.fingerColors { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.fingerColors label { display: flex; flex-direction: column; align-items: flex-start; font-size: .8rem; }
 .tools { font-size: .9rem; color: #cbd4df; border: 1px solid #435061; border-radius: 5px; padding: 9px; }
 .tools summary { cursor: pointer; font-weight: 600; }
 .tools[open] > :not(summary) { margin-top: 10px; }
