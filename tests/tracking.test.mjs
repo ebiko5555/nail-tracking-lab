@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { estimateNails } from '../src/tracking/estimate.ts';
 import { NailStabilizer } from '../src/tracking/stabilize.ts';
 import { estimatedNailPolygon, polygonIoU } from '../src/tracking/geometry.ts';
+import { toLocalContour, projectLocalContour, isLocalContour } from '../src/tracking/contourCalibration.ts';
 import { FINGERS, DEFAULT_CALIBRATION } from '../src/tracking/types.ts';
 
 const calibration = () => Object.fromEntries(FINGERS.map(f => [f, { ...DEFAULT_CALIBRATION }]));
@@ -76,4 +77,29 @@ test('contour overlap distinguishes an aligned nail from a shifted one', () => {
   const square = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
   const halfShifted = square.map(point => ({ x: point.x + 0.5, y: point.y }));
   assert.ok(Math.abs(polygonIoU(square, halfShifted) - 1 / 3) < 1e-12);
+});
+
+test('manual contour follows translation, scale and rotation in nail coordinates', () => {
+  const aspect = 9 / 16;
+  const nail = estimateNails(hand(), calibration(), aspect).middle;
+  const outline = estimatedNailPolygon(nail, aspect).filter((_, i) => i % 4 === 0);
+  const local = toLocalContour(outline, nail, aspect);
+  assert.ok(local);
+  const restored = projectLocalContour(local, nail, aspect);
+  restored.forEach((point, i) => {
+    assert.ok(Math.abs(point.x - outline[i].x) < 1e-12);
+    assert.ok(Math.abs(point.y - outline[i].y) < 1e-12);
+  });
+  const moved = { ...nail, center: { x: nail.center.x + .08, y: nail.center.y - .04 },
+    length: nail.length * 1.4, width: nail.width * .75, angle: nail.angle + .35 };
+  const expected = projectLocalContour(local, moved, aspect);
+  const actual = estimatedNailPolygon(moved, aspect, local);
+  assert.deepEqual(actual, expected);
+  assert.notDeepEqual(actual, restored);
+});
+
+test('invalid stored contour is rejected', () => {
+  assert.equal(isLocalContour([{x: 0, y: 0}, {x: 1, y: 0}]), false);
+  assert.equal(isLocalContour([{x: 0, y: 0}, {x: Infinity, y: 0}, {x: 0, y: 1}]), false);
+  assert.equal(isLocalContour([{x: 0, y: 0}, {x: 2, y: 0}, {x: 0, y: 1}]), false);
 });

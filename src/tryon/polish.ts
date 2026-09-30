@@ -1,5 +1,6 @@
 import type { NailEstimate } from '../tracking/types.ts';
 import { nailShapePoints } from '../tracking/geometry.ts';
+import type { LocalContour } from '../tracking/contourCalibration.ts';
 
 export type Finish = 'cream' | 'gel' | 'sheer' | 'matte';
 
@@ -19,6 +20,7 @@ export function drawPolish(
   color: string,
   finish: Finish,
   trackingAlpha: number,
+  localContour?: LocalContour,
 ): void {
   const x = (mirrored ? 1 - nail.center.x : nail.center.x) * viewWidth;
   const y = nail.center.y * viewHeight;
@@ -32,7 +34,7 @@ export function drawPolish(
   ctx.rotate(angle);
   ctx.globalAlpha = trackingAlpha * (finish === 'sheer' ? 0.58 : 0.88);
   ctx.beginPath();
-  nailShapePoints().forEach((point, index) => {
+  (localContour ?? nailShapePoints()).forEach((point, index) => {
     if (index) ctx.lineTo(point.x * length, point.y * width);
     else ctx.moveTo(point.x * length, point.y * width);
   });

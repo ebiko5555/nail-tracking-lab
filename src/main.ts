@@ -3,6 +3,7 @@ import { DEFAULT_CALIBRATION, FINGERS, type Calibration, type Finger, type Landm
 import { estimateNails } from './tracking/estimate.ts';
 import { NailStabilizer } from './tracking/stabilize.ts';
 import { estimatedNailPolygon, polygonArea, polygonIoU } from './tracking/geometry.ts';
+import { isLocalContour, toLocalContour, type LocalContour } from './tracking/contourCalibration.ts';
 import { drawPolish, type Finish } from './tryon/polish.ts';
 import './style.css';
 
@@ -26,7 +27,7 @@ app.innerHTML = `
     <h3>使い方</h3>
     <ol><li>背面カメラを許可し、明るい場所で片手の甲を映す。</li><li>色と仕上がりを選び、自分の爪で見比べる。</li><li>気に入った状態を写真に保存する。追従を詳しく調べたい場合だけ研究用の表示を開く。</li></ol>
     <h3>試せることと精度</h3>
-    <p>現在は関節点から爪の位置と形を推定して塗ります。爪の輪郭そのものをAIで検出する機能はまだないため、色がはみ出す場合があります。補正値は端末内に保存できます。追跡精度を調べる数値は撮影画面の「計測値を見る」にあります。</p>
+    <p>現在は関節点から爪の位置と形を推定して塗ります。爪の輪郭そのものをAIで検出する機能はまだないため、色がはみ出す場合があります。静止画で本人が指定した爪形を動く手にも反映でき、補正値は端末内に保存できます。追跡精度を調べる数値は撮影画面の「計測値を見る」にあります。</p>
     <h3>この先</h3>
     <p>iPhoneで静止・移動・傾き・指の重なりを測り、追跡と補正を改善します。実際の爪の輪郭を見つける専用モデルは未導入です。精度と利用条件を確認できた場合に検討し、TSUYAへの移植は検証後に判断します。</p>
   </section>
@@ -55,8 +56,9 @@ app.innerHTML = `
         <div id="sliders"></div>
         <div class="row"><button id="reset">この指の補正を初期化</button><button id="save">補正値を端末に保存</button></div>
       </details>
-      <p class="hint">固定フレームでは、爪を選んで輪郭上を順にタップしてください。点は最大12個です。輪郭は端末内の一時メモリにのみ保持します。</p>
+      <p class="hint">爪の形を合わせるには「1フレーム固定」後、指を選び、その爪の外周を順に3〜12点タップします。「指定した輪郭を試着に適用」でライブ表示にも反映します。これは手動補正であり、自動の爪認識ではありません。</p>
       <div class="row"><button id="undo" disabled>点を戻す</button><button id="clear" disabled>輪郭を消す</button><button id="export" disabled>比較結果を保存</button></div>
+      <div class="row"><button id="applyContour" disabled>指定した輪郭を試着に適用</button><button id="saveContour" disabled>輪郭補正を端末に保存</button><button id="clearContour" disabled>輪郭補正を消す</button></div>
       <details class="tools"><summary>計測値を見る（研究用）</summary>
         <p class="hint">FPS＝画面更新、推論ms＝手の認識時間、描画ms＝重ね描き時間。各指の位置・幅・角度・変動は推定値です。「認識信頼度 不明」は爪そのものを検出していないことを示します。</p>
         <div id="metrics" aria-live="polite"></div>
@@ -128,6 +130,21 @@ let currentTracks: Record<Finger, NailTrack> | null = null;
 let currentLandmarks: Landmark[] = [];
 const emptyManual = () => Object.fromEntries(FINGERS.map(f => [f, [] as Point[]])) as Record<Finger, Point[]>;
 let manual = emptyManual();
+const contourStorageKey = 'nail-tracking-lab-manual-contours-v1';
+function readLocalContours(): Partial<Record<Finger, LocalContour>> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(contourStorageKey) || '{}') as Record<string, unknown>;
+    return Object.fromEntries(FINGERS.filter(f => isLocalContour(saved[f])).map(f => [f, saved[f]])) as Partial<Record<Finger, LocalContour>>;
+  } catch { return {}; }
+}
+const localContours = readLocalContours();
+function updateContourButtons() {
+  $<HTMLButtonElement>('#applyContour').disabled = !frozen || !FINGERS.some(f => manual[f].length >= 3 && frozenTracks?.[f]?.status === 'tracked');
+  const hasApplied = FINGERS.some(f => localContours[f]);
+  $<HTMLButtonElement>('#saveContour').disabled = !hasApplied;
+  $<HTMLButtonElement>('#clearContour').disabled = !hasApplied;
+}
+updateContourButtons();
 let lastInferenceAt = 0;
 let inferenceMs = 0;
 let drawMs = 0;
@@ -233,6 +250,7 @@ function stop() {
   stabilizer.reset();
   $<HTMLButtonElement>('#start').disabled = false;
   for (const id of ['stop', 'freeze', 'resume', 'undo', 'clear', 'export']) $<HTMLButtonElement>(`#${id}`).disabled = true;
+  updateContourButtons();
   $<HTMLButtonElement>('#capture').disabled = true;
   banner.textContent = 'カメラを停止しました'; comparison.textContent = '';
   appStatus.textContent = '「カメラ開始」で再開できます。';
@@ -303,14 +321,37 @@ $('#freeze').addEventListener('click', () => {
   $<HTMLButtonElement>('#resume').disabled = false; $<HTMLButtonElement>('#freeze').disabled = true;
   $<HTMLButtonElement>('#undo').disabled = false; $<HTMLButtonElement>('#clear').disabled = false;
   $<HTMLButtonElement>('#export').disabled = false;
+  updateContourButtons();
   banner.textContent = '固定中：輪郭をタップして指定。「再開」でライブに戻ります';
   appStatus.textContent = '1フレーム固定中です。「再開」でカメラ映像に戻ります。';
   $<HTMLElement>('.viewer').classList.add('frozen');
   render();
 });
-$('#resume').addEventListener('click', () => { frozen = false; frozenFrame = null; frozenTracks = null; manual = emptyManual(); stabilizer.reset(); lastInferenceAt = 0; $<HTMLElement>('.viewer').classList.remove('frozen'); $<HTMLButtonElement>('#resume').disabled = true; $<HTMLButtonElement>('#freeze').disabled = false; $<HTMLButtonElement>('#export').disabled = true; comparison.textContent = ''; banner.textContent = ''; appStatus.textContent = 'ライブ映像に戻りました。'; });
-$('#undo').addEventListener('click', () => { manual[fingerInput.value as Finger].pop(); render(); });
-$('#clear').addEventListener('click', () => { manual[fingerInput.value as Finger] = []; render(); });
+$('#resume').addEventListener('click', () => { frozen = false; frozenFrame = null; frozenTracks = null; manual = emptyManual(); stabilizer.reset(); lastInferenceAt = 0; $<HTMLElement>('.viewer').classList.remove('frozen'); $<HTMLButtonElement>('#resume').disabled = true; $<HTMLButtonElement>('#freeze').disabled = false; $<HTMLButtonElement>('#export').disabled = true; comparison.textContent = ''; banner.textContent = ''; appStatus.textContent = 'ライブ映像に戻りました。'; updateContourButtons(); });
+$('#undo').addEventListener('click', () => { manual[fingerInput.value as Finger].pop(); updateContourButtons(); render(); });
+$('#clear').addEventListener('click', () => { manual[fingerInput.value as Finger] = []; updateContourButtons(); render(); });
+$('#applyContour').addEventListener('click', () => {
+  if (!frozenFrame || !frozenTracks) return;
+  let applied = 0;
+  for (const finger of FINGERS) {
+    const estimate = frozenTracks[finger].raw;
+    if (!estimate || frozenTracks[finger].status !== 'tracked' || manual[finger].length < 3) continue;
+    const shape = toLocalContour(manual[finger], estimate, frozenFrame.width / frozenFrame.height);
+    if (shape) { localContours[finger] = shape; applied++; }
+  }
+  updateContourButtons(); render();
+  appStatus.textContent = applied ? `${applied}本の手動輪郭を適用しました。「再開」で動きへの追従を確認できます。` : '輪郭を適用できませんでした。爪の外周を順に指定してください。';
+});
+$('#saveContour').addEventListener('click', () => {
+  localStorage.setItem(contourStorageKey, JSON.stringify(localContours));
+  appStatus.textContent = '手動輪郭の補正値をこの端末に保存しました。撮影画像は保存していません。';
+});
+$('#clearContour').addEventListener('click', () => {
+  for (const finger of FINGERS) delete localContours[finger];
+  localStorage.removeItem(contourStorageKey);
+  updateContourButtons(); render();
+  appStatus.textContent = '手動輪郭の補正を消しました。';
+});
 
 function recomputeFrozen() {
   if (!frozenTracks || currentLandmarks.length !== 21) return;
@@ -369,7 +410,7 @@ function sizeCanvas() {
 }
 function displayPoint(p: Point): Point { return { x: ($<HTMLInputElement>('#mirror').checked ? 1 - p.x : p.x) * canvas.width, y: p.y * canvas.height }; }
 function drawNail(n: NailEstimate, color: string, fill: boolean, alpha = 1, dashed = false) {
-  const points = estimatedNailPolygon(n, canvas.width / canvas.height);
+  const points = estimatedNailPolygon(n, canvas.width / canvas.height, localContours[n.finger]);
   ctx.save(); ctx.globalAlpha = alpha;
   ctx.beginPath();
   points.forEach((point, index) => {
@@ -404,7 +445,7 @@ function render() {
     if (t.filtered && t.status !== 'unknown' && t.status !== 'lost') {
       if (mode === 'NAIL OVERLAY') {
         if (!$<HTMLInputElement>('#bare').checked) drawPolish(ctx, t.filtered, canvas.width, canvas.height, $<HTMLInputElement>('#mirror').checked,
-          $<HTMLInputElement>('#multiColor').checked ? fingerColors[f] : selectedColor, finish, t.alpha);
+          $<HTMLInputElement>('#multiColor').checked ? fingerColors[f] : selectedColor, finish, t.alpha, localContours[f]);
       } else drawNail(t.filtered,COLORS[f],false,t.alpha,t.status === 'held');
     }
     if (mode === 'DEBUG' && $<HTMLInputElement>('#compare').checked && t.raw && t.status === 'tracked') drawNail(t.raw,'#ffffff',false,0.8,true);
@@ -444,7 +485,8 @@ function showComparison() {
     const estimated = estimatedNailPolygon(n, frozenFrame!.width / frozenFrame!.height);
     const ratio = polygonArea(pts)/polygonArea(estimated);
     const iou = polygonIoU(pts, estimated);
-    return `${LABELS[f]}：輪郭重なり率 ${iou === null ? '不明' : `${(iou*100).toFixed(1)}%`}／中心差 ${(offset*100).toFixed(2)}（正規化座標×100）／面積比 ${ratio.toFixed(2)}<br>`;
+    const applied = localContours[f] ? polygonIoU(pts, estimatedNailPolygon(n, frozenFrame!.width / frozenFrame!.height, localContours[f])) : null;
+    return `${LABELS[f]}：初期輪郭との重なり ${iou === null ? '不明' : `${(iou*100).toFixed(1)}%`}${applied === null ? '' : `／手動補正後 ${(applied*100).toFixed(1)}%`}／中心差 ${(offset*100).toFixed(2)}（正規化座標×100）／面積比 ${ratio.toFixed(2)}<br>`;
   }).join('');
 }
 canvas.addEventListener('pointerdown', event => {
@@ -454,6 +496,7 @@ canvas.addEventListener('pointerdown', event => {
   if (displayed.x < 0 || displayed.x > 1 || displayed.y < 0 || displayed.y > 1) return;
   manual[fingerInput.value as Finger].push({ x: $<HTMLInputElement>('#mirror').checked ? 1-displayed.x : displayed.x, y: displayed.y });
   if (manual[fingerInput.value as Finger].length > 12) manual[fingerInput.value as Finger].shift();
+  updateContourButtons();
   render();
 });
 $('#export').addEventListener('click', () => {

@@ -1,4 +1,5 @@
 import type { NailEstimate, Point } from './types.ts';
+import { projectLocalContour, type LocalContour } from './contourCalibration.ts';
 
 const BEZIERS: [Point, Point, Point][] = [
   [{ x: -0.50, y: -0.27 }, { x: -0.35, y: -0.46 }, { x: -0.18, y: -0.47 }],
@@ -33,7 +34,8 @@ export function nailShapePoints(samplesPerCurve = 8): Point[] {
   return points;
 }
 
-export function estimatedNailPolygon(nail: NailEstimate, aspect: number): Point[] {
+export function estimatedNailPolygon(nail: NailEstimate, aspect: number, contour?: LocalContour): Point[] {
+  if (contour) return projectLocalContour(contour, nail, aspect);
   const cos = Math.cos(nail.angle), sin = Math.sin(nail.angle);
   return nailShapePoints().map(point => {
     const x = point.x * nail.length, y = point.y * nail.width;
